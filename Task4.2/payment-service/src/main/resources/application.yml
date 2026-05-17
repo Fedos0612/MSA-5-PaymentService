@@ -1,0 +1,17 @@
+server:
+  port: ${SERVER_PORT:3000}
+
+spring:
+  application:
+    name: payment-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    root: INFO
+    ru.orchestrpay.payment: INFO

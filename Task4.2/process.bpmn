@@ -1,0 +1,263 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+        xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+        xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+        xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+        xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+        xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        id="Definitions_OrchestrPay"
+        targetNamespace="http://orchestrpay.io/bpmn">
+
+    <bpmn:process id="orchestrpay-payment-process" name="OrchestrPay Payment Saga" isExecutable="true">
+
+        <bpmn:startEvent id="StartEvent_PaymentRequested" name="Payment requested">
+            <bpmn:outgoing>Flow_Start_CreatePayment</bpmn:outgoing>
+        </bpmn:startEvent>
+
+        <bpmn:serviceTask id="Task_CreatePayment" name="CREATE_PAYMENT">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="create-payment"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_Start_CreatePayment</bpmn:incoming>
+            <bpmn:outgoing>Flow_CreatePayment_Debit</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_DebitCustomer" name="DEBIT_CUSTOMER_ACCOUNT">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="debit-customer"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_CreatePayment_Debit</bpmn:incoming>
+            <bpmn:outgoing>Flow_Debit_DebitResult</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:exclusiveGateway id="Gateway_DebitResult" name="Debit successful?">
+            <bpmn:incoming>Flow_Debit_DebitResult</bpmn:incoming>
+            <bpmn:outgoing>Flow_DebitSuccess_FraudCheck</bpmn:outgoing>
+            <bpmn:outgoing>Flow_DebitFailed_NotifyDecline</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+
+        <bpmn:serviceTask id="Task_RunFraudCheck" name="RUN_FRAUD_CHECK">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="fraud-check"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_DebitSuccess_FraudCheck</bpmn:incoming>
+            <bpmn:outgoing>Flow_FraudCheck_FraudResult</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:exclusiveGateway id="Gateway_FraudResult" name="Fraud decision">
+            <bpmn:incoming>Flow_FraudCheck_FraudResult</bpmn:incoming>
+            <bpmn:outgoing>Flow_FraudAllow_Pivot</bpmn:outgoing>
+            <bpmn:outgoing>Flow_FraudDeny_Block</bpmn:outgoing>
+            <bpmn:outgoing>Flow_FraudManual_UserTask</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+
+        <bpmn:userTask id="UserTask_ManualReview" name="Manual antifraud review">
+            <bpmn:extensionElements>
+                <zeebe:userTask/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_FraudManual_UserTask</bpmn:incoming>
+            <bpmn:outgoing>Flow_ManualReview_ManualResult</bpmn:outgoing>
+        </bpmn:userTask>
+
+        <bpmn:boundaryEvent id="BoundaryEvent_ManualCutoff" name="cut-off timer" attachedToRef="UserTask_ManualReview">
+            <bpmn:outgoing>Flow_ManualCutoff_ApplyCutoff</bpmn:outgoing>
+            <bpmn:timerEventDefinition>
+                <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">=manualReviewTimeout</bpmn:timeDuration>
+            </bpmn:timerEventDefinition>
+        </bpmn:boundaryEvent>
+
+        <bpmn:serviceTask id="Task_ApplyCutoffAllow" name="APPLY_CUTOFF_ALLOW">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="apply-cutoff-allow"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_ManualCutoff_ApplyCutoff</bpmn:incoming>
+            <bpmn:outgoing>Flow_Cutoff_Pivot</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:exclusiveGateway id="Gateway_ManualResult" name="Manual decision">
+            <bpmn:incoming>Flow_ManualReview_ManualResult</bpmn:incoming>
+            <bpmn:outgoing>Flow_ManualAllow_Pivot</bpmn:outgoing>
+            <bpmn:outgoing>Flow_ManualDeny_Block</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+
+        <bpmn:intermediateThrowEvent id="Event_PivotPoint" name="PIVOT POINT">
+            <bpmn:incoming>Flow_FraudAllow_Pivot</bpmn:incoming>
+            <bpmn:incoming>Flow_ManualAllow_Pivot</bpmn:incoming>
+            <bpmn:incoming>Flow_Cutoff_Pivot</bpmn:incoming>
+            <bpmn:outgoing>Flow_Pivot_Transfer</bpmn:outgoing>
+        </bpmn:intermediateThrowEvent>
+
+        <bpmn:serviceTask id="Task_TransferToCounterparty" name="TRANSFER_TO_COUNTERPARTY">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="transfer-to-counterparty"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_Pivot_Transfer</bpmn:incoming>
+            <bpmn:outgoing>Flow_Transfer_TransferResult</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:exclusiveGateway id="Gateway_TransferResult" name="Transfer successful?">
+            <bpmn:incoming>Flow_Transfer_TransferResult</bpmn:incoming>
+            <bpmn:outgoing>Flow_TransferSuccess_NotifySuccess</bpmn:outgoing>
+            <bpmn:outgoing>Flow_TransferFailed_Refund</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+
+        <bpmn:serviceTask id="Task_BlockPayment" name="MARK_PAYMENT_BLOCKED">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="block-payment"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_FraudDeny_Block</bpmn:incoming>
+            <bpmn:incoming>Flow_ManualDeny_Block</bpmn:incoming>
+            <bpmn:outgoing>Flow_Block_ParallelSplit</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:parallelGateway id="Gateway_BlockedParallelSplit" name="Parallel compensation">
+            <bpmn:incoming>Flow_Block_ParallelSplit</bpmn:incoming>
+            <bpmn:outgoing>Flow_BlockedSplit_Refund</bpmn:outgoing>
+            <bpmn:outgoing>Flow_BlockedSplit_SecurityAlert</bpmn:outgoing>
+        </bpmn:parallelGateway>
+
+        <bpmn:serviceTask id="Task_RefundCustomerBlocked" name="REFUND_CUSTOMER_ACCOUNT">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="refund-customer"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_BlockedSplit_Refund</bpmn:incoming>
+            <bpmn:outgoing>Flow_BlockedRefund_NotifyDecline</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_SendSecurityAlert" name="SEND_SECURITY_ALERT">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="send-security-alert"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_BlockedSplit_SecurityAlert</bpmn:incoming>
+            <bpmn:outgoing>Flow_SecurityAlert_ParallelJoin</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_NotifyDeclineBlocked" name="SEND_DECLINE_NOTIFICATION">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="notify-decline"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_BlockedRefund_NotifyDecline</bpmn:incoming>
+            <bpmn:outgoing>Flow_NotifyDeclineBlocked_ParallelJoin</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:parallelGateway id="Gateway_BlockedParallelJoin" name="Join">
+            <bpmn:incoming>Flow_NotifyDeclineBlocked_ParallelJoin</bpmn:incoming>
+            <bpmn:incoming>Flow_SecurityAlert_ParallelJoin</bpmn:incoming>
+            <bpmn:outgoing>Flow_BlockedJoin_EndBlocked</bpmn:outgoing>
+        </bpmn:parallelGateway>
+
+        <bpmn:serviceTask id="Task_RefundCustomerTransferFailed" name="REFUND_CUSTOMER_ACCOUNT">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="refund-customer"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_TransferFailed_Refund</bpmn:incoming>
+            <bpmn:outgoing>Flow_TransferRefund_NotifyDecline</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_NotifyDeclineTransferFailed" name="SEND_DECLINE_NOTIFICATION">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="notify-decline"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_TransferRefund_NotifyDecline</bpmn:incoming>
+            <bpmn:outgoing>Flow_NotifyDeclineTransferFailed_EndRefunded</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_NotifyDeclineDebitFailed" name="SEND_DECLINE_NOTIFICATION">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="notify-decline"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_DebitFailed_NotifyDecline</bpmn:incoming>
+            <bpmn:outgoing>Flow_NotifyDeclineDebitFailed_EndFailed</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:serviceTask id="Task_NotifySuccess" name="SEND_SUCCESS_NOTIFICATION">
+            <bpmn:extensionElements>
+                <zeebe:taskDefinition type="notify-success"/>
+            </bpmn:extensionElements>
+            <bpmn:incoming>Flow_TransferSuccess_NotifySuccess</bpmn:incoming>
+            <bpmn:outgoing>Flow_NotifySuccess_EndSuccess</bpmn:outgoing>
+        </bpmn:serviceTask>
+
+        <bpmn:endEvent id="EndEvent_Success" name="Payment completed">
+            <bpmn:incoming>Flow_NotifySuccess_EndSuccess</bpmn:incoming>
+        </bpmn:endEvent>
+
+        <bpmn:endEvent id="EndEvent_BlockedRefunded" name="Blocked and refunded">
+            <bpmn:incoming>Flow_BlockedJoin_EndBlocked</bpmn:incoming>
+        </bpmn:endEvent>
+
+        <bpmn:endEvent id="EndEvent_TransferFailedRefunded" name="Transfer failed and refunded">
+            <bpmn:incoming>Flow_NotifyDeclineTransferFailed_EndRefunded</bpmn:incoming>
+        </bpmn:endEvent>
+
+        <bpmn:endEvent id="EndEvent_DebitFailed" name="Payment failed">
+            <bpmn:incoming>Flow_NotifyDeclineDebitFailed_EndFailed</bpmn:incoming>
+        </bpmn:endEvent>
+
+        <bpmn:sequenceFlow id="Flow_Start_CreatePayment" sourceRef="StartEvent_PaymentRequested" targetRef="Task_CreatePayment"/>
+        <bpmn:sequenceFlow id="Flow_CreatePayment_Debit" sourceRef="Task_CreatePayment" targetRef="Task_DebitCustomer"/>
+        <bpmn:sequenceFlow id="Flow_Debit_DebitResult" sourceRef="Task_DebitCustomer" targetRef="Gateway_DebitResult"/>
+
+        <bpmn:sequenceFlow id="Flow_DebitSuccess_FraudCheck" sourceRef="Gateway_DebitResult" targetRef="Task_RunFraudCheck">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=debitResult = "SUCCESS"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_DebitFailed_NotifyDecline" sourceRef="Gateway_DebitResult" targetRef="Task_NotifyDeclineDebitFailed">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=debitResult = "FAILED"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_FraudCheck_FraudResult" sourceRef="Task_RunFraudCheck" targetRef="Gateway_FraudResult"/>
+
+        <bpmn:sequenceFlow id="Flow_FraudAllow_Pivot" sourceRef="Gateway_FraudResult" targetRef="Event_PivotPoint">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=fraudDecision = "ALLOW"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_FraudDeny_Block" sourceRef="Gateway_FraudResult" targetRef="Task_BlockPayment">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=fraudDecision = "DENY"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_FraudManual_UserTask" sourceRef="Gateway_FraudResult" targetRef="UserTask_ManualReview">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=fraudDecision = "MANUAL_REVIEW"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_ManualReview_ManualResult" sourceRef="UserTask_ManualReview" targetRef="Gateway_ManualResult"/>
+        <bpmn:sequenceFlow id="Flow_ManualCutoff_ApplyCutoff" sourceRef="BoundaryEvent_ManualCutoff" targetRef="Task_ApplyCutoffAllow"/>
+        <bpmn:sequenceFlow id="Flow_Cutoff_Pivot" sourceRef="Task_ApplyCutoffAllow" targetRef="Event_PivotPoint"/>
+
+        <bpmn:sequenceFlow id="Flow_ManualAllow_Pivot" sourceRef="Gateway_ManualResult" targetRef="Event_PivotPoint">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=manualDecision = "ALLOW"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_ManualDeny_Block" sourceRef="Gateway_ManualResult" targetRef="Task_BlockPayment">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=manualDecision = "DENY"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_Pivot_Transfer" sourceRef="Event_PivotPoint" targetRef="Task_TransferToCounterparty"/>
+        <bpmn:sequenceFlow id="Flow_Transfer_TransferResult" sourceRef="Task_TransferToCounterparty" targetRef="Gateway_TransferResult"/>
+
+        <bpmn:sequenceFlow id="Flow_TransferSuccess_NotifySuccess" sourceRef="Gateway_TransferResult" targetRef="Task_NotifySuccess">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=transferResult = "SUCCESS"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_TransferFailed_Refund" sourceRef="Gateway_TransferResult" targetRef="Task_RefundCustomerTransferFailed">
+            <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=transferResult = "FAILED"</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+
+        <bpmn:sequenceFlow id="Flow_Block_ParallelSplit" sourceRef="Task_BlockPayment" targetRef="Gateway_BlockedParallelSplit"/>
+        <bpmn:sequenceFlow id="Flow_BlockedSplit_Refund" sourceRef="Gateway_BlockedParallelSplit" targetRef="Task_RefundCustomerBlocked"/>
+        <bpmn:sequenceFlow id="Flow_BlockedSplit_SecurityAlert" sourceRef="Gateway_BlockedParallelSplit" targetRef="Task_SendSecurityAlert"/>
+        <bpmn:sequenceFlow id="Flow_BlockedRefund_NotifyDecline" sourceRef="Task_RefundCustomerBlocked" targetRef="Task_NotifyDeclineBlocked"/>
+        <bpmn:sequenceFlow id="Flow_NotifyDeclineBlocked_ParallelJoin" sourceRef="Task_NotifyDeclineBlocked" targetRef="Gateway_BlockedParallelJoin"/>
+        <bpmn:sequenceFlow id="Flow_SecurityAlert_ParallelJoin" sourceRef="Task_SendSecurityAlert" targetRef="Gateway_BlockedParallelJoin"/>
+        <bpmn:sequenceFlow id="Flow_BlockedJoin_EndBlocked" sourceRef="Gateway_BlockedParallelJoin" targetRef="EndEvent_BlockedRefunded"/>
+
+        <bpmn:sequenceFlow id="Flow_TransferRefund_NotifyDecline" sourceRef="Task_RefundCustomerTransferFailed" targetRef="Task_NotifyDeclineTransferFailed"/>
+        <bpmn:sequenceFlow id="Flow_NotifyDeclineTransferFailed_EndRefunded" sourceRef="Task_NotifyDeclineTransferFailed" targetRef="EndEvent_TransferFailedRefunded"/>
+
+        <bpmn:sequenceFlow id="Flow_NotifyDeclineDebitFailed_EndFailed" sourceRef="Task_NotifyDeclineDebitFailed" targetRef="EndEvent_DebitFailed"/>
+        <bpmn:sequenceFlow id="Flow_NotifySuccess_EndSuccess" sourceRef="Task_NotifySuccess" targetRef="EndEvent_Success"/>
+
+    </bpmn:process>
+
+</bpmn:definitions>
